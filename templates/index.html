@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real-Time Translation</title>
+</head>
+<body>
+    <h1>Real-Time Translation App</h1>
+    <p id="translatedText">Translated text will appear here</p>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        const socket = io();
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('transcription', data => {
+            document.getElementById('translatedText').innerText = data.transcript;
+        });
+
+        function startStreaming() {
+            socket.emit('start_stream');
+        }
+
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            const mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.ondataavailable = event => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    socket.emit('audio', reader.result);
+                };
+                reader.readAsArrayBuffer(event.data);
+            };
+            mediaRecorder.start(1000); // Send audio data every second
+        });
+
+        window.onload = startStreaming;
+    </script>
+</body>
+</html>
