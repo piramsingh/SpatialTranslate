@@ -5,9 +5,12 @@ import sys
 import logging
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
-from google.cloud import speech
+from google.cloud import speech, translate_v2 as translate
 
 import pyaudio
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Audio recording parameters
 RATE = 16000
@@ -18,6 +21,7 @@ socketio = SocketIO(app)
 
 # Set up Google Cloud clients
 speech_client = speech.SpeechClient()
+translate_client = translate.Client()
 
 class MicrophoneStream:
     def __init__(self, rate=RATE, chunk=CHUNK):
@@ -66,7 +70,7 @@ class MicrophoneStream:
                     break
             yield b"".join(data)
 
-def listen_print_loop(responses):
+def listen_print_loop(responses, target_language):
     num_chars_printed = 0
     for response in responses:
         if not response.results:
@@ -75,6 +79,10 @@ def listen_print_loop(responses):
         if not result.alternatives:
             continue
         transcript = result.alternatives[0].transcript
+        
+        # Log the intermediate and final results for debugging
+        logging.info(f"Transcript: {transcript}")
+
         overwrite_chars = " " * (num_chars_printed - len(transcript))
         if not result.is_final:
             sys.stdout.write(transcript + overwrite_chars + "\r")
@@ -82,7 +90,14 @@ def listen_print_loop(responses):
             num_chars_printed = len(transcript)
         else:
             print(transcript + overwrite_chars)
-            socketio.emit('transcription', {'transcript': transcript})
+            try:
+                translation = translate_client.translate(transcript, target_language=target_language)
+                translated_text = translation['translatedText']
+                logging.info(f"Translated Text: {translated_text}")
+                socketio.emit('transcription', {'original': transcript, 'transcript': translated_text})
+            except Exception as e:
+                logging.error(f"Translation Error: {e}")
+                socketio.emit('error', {'error': str(e)})
             num_chars_printed = 0
 
 @app.route('/')
@@ -90,8 +105,9 @@ def index():
     return render_template('index.html')
 
 @socketio.on('start_stream')
-def start_stream():
+def start_stream(data):
     language_code = "en-US"
+    target_language = data['language']
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
@@ -101,21 +117,31 @@ def start_stream():
         config=config, interim_results=True
     )
 
-    with MicrophoneStream(RATE, CHUNK) as stream:
+    global mic_stream
+    mic_stream = MicrophoneStream(RATE, CHUNK)
+
+    with mic_stream as stream:
         audio_generator = stream.generator()
         requests = (
             speech.StreamingRecognizeRequest(audio_content=content)
             for content in audio_generator
         )
         responses = speech_client.streaming_recognize(streaming_config, requests)
-        listen_print_loop(responses)
+        listen_print_loop(responses, target_language)
 
 @socketio.on('audio')
 def handle_audio(data):
-    audio_stream = [data]
-    requests = (speech.StreamingRecognizeRequest(audio_content=chunk) for chunk in audio_stream)
-    responses = speech_client.streaming_recognize(streaming_config, requests)
-    listen_print_loop(responses)
+    if mic_stream and not mic_stream.closed:
+        audio_stream = [data['audioData']]
+        target_language = data['language']
+        requests = (speech.StreamingRecognizeRequest(audio_content=chunk) for chunk in audio_stream)
+        responses = speech_client.streaming_recognize(streaming_config, requests)
+        listen_print_loop(responses, target_language)
+
+@socketio.on('stop_stream')
+def stop_stream():
+    if mic_stream and not mic_stream.closed:
+        mic_stream.closed = True
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)

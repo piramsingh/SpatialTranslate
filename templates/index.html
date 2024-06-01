@@ -2,40 +2,187 @@
 <html>
 <head>
     <title>Real-Time Translation</title>
+    <style>
+        @font-face {
+            font-family: 'SF Pro Display';
+            src: url('https://developer.apple.com/fonts/SFProDisplay-Regular.woff2') format('woff2'),
+                 url('https://developer.apple.com/fonts/SFProDisplay-Regular.woff') format('woff');
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        body {
+            font-family: 'SF Pro Display', Arial, sans-serif;
+            background-color: #F2F2F7; /* Light gray background */
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #1D1D1F; /* Dark text color */
+            text-align: center;
+            font-size: 24px;
+        }
+
+        #controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        #language-select, #startButton, #stopButton {
+            font-size: 16px;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin: 5px;
+        }
+
+        #language-select {
+            background-color: #FFFFFF;
+            color: #1D1D1F;
+        }
+
+        #startButton {
+            background-color: #007AFF; /* Apple blue */
+            color: #FFFFFF;
+        }
+
+        #stopButton {
+            background-color: #FF3B30; /* Apple red */
+            color: #FFFFFF;
+        }
+
+        #stopButton:disabled {
+            background-color: #FF3B30;
+            color: #FFFFFF;
+            opacity: 0.5;
+        }
+
+        .container {
+            display: flex;
+            justify-content: space-around;
+        }
+
+        .column {
+            background-color: #FFFFFF;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            width: 45%;
+        }
+
+        .column h2 {
+            text-align: center;
+            color: #1D1D1F;
+        }
+
+        #englishText, #translatedText {
+            font-size: 18px;
+            color: #1D1D1F;
+            white-space: pre-wrap; /* Preserve whitespace */
+            height: 400px; /* Fixed height */
+            overflow-y: auto; /* Scrollable */
+        }
+
+        .error {
+            color: #FF3B30; /* Apple red */
+            margin-top: 20px;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
     <h1>Real-Time Translation App</h1>
-    <p id="translatedText">Translated text will appear here</p>
+    <div id="controls">
+        <select id="language-select">
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="zh">Chinese</option>
+            <!-- Add more languages as needed -->
+        </select>
+        <button id="startButton">Start</button>
+        <button id="stopButton" disabled>Stop</button>
+    </div>
+    <div class="container">
+        <div class="column">
+            <h2>English</h2>
+            <div id="englishText">English transcription will appear here</div>
+        </div>
+        <div class="column">
+            <h2>Translation</h2>
+            <div id="translatedText">Translated text will appear here</div>
+        </div>
+    </div>
+    <div class="error" id="error"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script>
         const socket = io();
+        let mediaRecorder;
+        let isStreaming = false;
 
         socket.on('connect', () => {
             console.log('Connected to server');
         });
 
         socket.on('transcription', data => {
-            document.getElementById('translatedText').innerText = data.transcript;
+            const englishTextElem = document.getElementById('englishText');
+            const translatedTextElem = document.getElementById('translatedText');
+            englishTextElem.innerText += data.original + '\n';
+            translatedTextElem.innerText += data.transcript + '\n';
         });
+
+        socket.on('error', data => {
+            document.getElementById('error').innerText = data.error;
+        });
+
+        document.getElementById('startButton').onclick = () => {
+            if (!isStreaming) {
+                startStreaming();
+            }
+        };
+
+        document.getElementById('stopButton').onclick = () => {
+            if (isStreaming) {
+                stopStreaming();
+            }
+        };
 
         function startStreaming() {
-            socket.emit('start_stream');
+            const languageSelect = document.getElementById('language-select');
+            const selectedLanguage = languageSelect.value;
+            document.getElementById('englishText').innerText = ''; // Clear previous text
+            document.getElementById('translatedText').innerText = ''; // Clear previous text
+            socket.emit('start_stream', { language: selectedLanguage });
+            document.getElementById('startButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
+            isStreaming = true;
+
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = event => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        socket.emit('audio', { audioData: reader.result, language: selectedLanguage });
+                    };
+                    reader.readAsArrayBuffer(event.data);
+                };
+                mediaRecorder.start(1000); // Send audio data every second
+            });
         }
 
-        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-            const mediaRecorder = new MediaRecorder(stream);
-            mediaRecorder.ondataavailable = event => {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    socket.emit('audio', reader.result);
-                };
-                reader.readAsArrayBuffer(event.data);
-            };
-            mediaRecorder.start(1000); // Send audio data every second
-        });
-
-        window.onload = startStreaming;
+        function stopStreaming() {
+            if (mediaRecorder) {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+            socket.emit('stop_stream'); // Notify server to stop streaming
+            isStreaming = false;
+        }
     </script>
 </body>
 </html>
